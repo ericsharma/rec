@@ -10,6 +10,7 @@
 		089C1665F88E39A09244ECC1 /* recApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089C1665F88E39A09244ECB1 /* recApp.swift */; };
 		089C1665F88E39A09244ECC2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089C1665F88E39A09244ECB2 /* ContentView.swift */; };
 		089C1665F88E39A09244ECC3 /* AudioCaptureManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089C1665F88E39A09244ECB3 /* AudioCaptureManager.swift */; };
+		089C1665F88E39A09244ECC4 /* TranscriptionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089C1665F88E39A09244ECB7 /* TranscriptionManager.swift */; };
 		089C1665F88E39A09244ECC6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 089C1665F88E39A09244ECB9 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -17,6 +18,7 @@
 		089C1665F88E39A09244ECB1 /* recApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = recApp.swift; sourceTree = "<group>"; };
 		089C1665F88E39A09244ECB2 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		089C1665F88E39A09244ECB3 /* AudioCaptureManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureManager.swift; sourceTree = "<group>"; };
+		089C1665F88E39A09244ECB7 /* TranscriptionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionManager.swift; sourceTree = "<group>"; };
 		089C1665F88E39A09244ECB4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		089C1665F88E39A09244ECB5 /* rec.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rec.entitlements; sourceTree = "<group>"; };
 		089C1665F88E39A09244ECB6 /* rec.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = rec.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -48,6 +50,7 @@
 				089C1665F88E39A09244ECB1 /* recApp.swift */,
 				089C1665F88E39A09244ECB2 /* ContentView.swift */,
 				089C1665F88E39A09244ECB3 /* AudioCaptureManager.swift */,
+				089C1665F88E39A09244ECB7 /* TranscriptionManager.swift */,
 				089C1665F88E39A09244ECB4 /* Info.plist */,
 				089C1665F88E39A09244ECB5 /* rec.entitlements */,
 				089C1665F88E39A09244ECB9 /* Assets.xcassets */,
@@ -130,6 +133,7 @@
 				089C1665F88E39A09244ECC1 /* recApp.swift in Sources */,
 				089C1665F88E39A09244ECC2 /* ContentView.swift in Sources */,
 				089C1665F88E39A09244ECC3 /* AudioCaptureManager.swift in Sources */,
+				089C1665F88E39A09244ECC4 /* TranscriptionManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

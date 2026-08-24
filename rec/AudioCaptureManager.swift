@@ -83,7 +83,13 @@ class AudioCaptureManager: ObservableObject {
         let id = UUID()
         var url: URL
         var duration: TimeInterval
+        /// Cached at load time so the row doesn't stat the disk on every
+        /// redraw; refreshed by `loadRecordings()` after a transcription.
+        var hasMIDI: Bool = false
         var name: String { url.deletingPathExtension().lastPathComponent }
+
+        /// Transcriptions live beside the audio as `<name>.mid`.
+        var midiURL: URL { url.deletingPathExtension().appendingPathExtension("mid") }
 
         var formattedDuration: String {
             let m = Int(duration) / 60
@@ -141,7 +147,12 @@ class AudioCaptureManager: ObservableObject {
             }
             .map { url in
                 let player = try? AVAudioPlayer(contentsOf: url)
-                return Recording(url: url, duration: player?.duration ?? 0)
+                let midi = url.deletingPathExtension().appendingPathExtension("mid")
+                return Recording(
+                    url: url,
+                    duration: player?.duration ?? 0,
+                    hasMIDI: FileManager.default.fileExists(atPath: midi.path)
+                )
             }
     }
 
@@ -302,6 +313,9 @@ class AudioCaptureManager: ObservableObject {
 
     func deleteRecording(_ recording: Recording) {
         try? FileManager.default.removeItem(at: recording.url)
+        // Otherwise the .mid is orphaned and gets silently adopted by the next
+        // recording that happens to be given the same name.
+        try? FileManager.default.removeItem(at: recording.midiURL)
         loadRecordings()
     }
 
@@ -315,6 +329,14 @@ class AudioCaptureManager: ObservableObject {
 
         do {
             try FileManager.default.moveItem(at: recording.url, to: newURL)
+            // Keep the sidecar paired with its audio — the row finds the MIDI
+            // by filename, so leaving it behind would look like a lost
+            // transcription.
+            let newMIDI = newURL.deletingPathExtension().appendingPathExtension("mid")
+            if FileManager.default.fileExists(atPath: recording.midiURL.path),
+               !FileManager.default.fileExists(atPath: newMIDI.path) {
+                try? FileManager.default.moveItem(at: recording.midiURL, to: newMIDI)
+            }
             loadRecordings()
             return true
         } catch {

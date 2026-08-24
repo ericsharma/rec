@@ -11,6 +11,7 @@ class WindowState {
 
 struct ContentView: View {
     @StateObject private var manager = AudioCaptureManager()
+    @StateObject private var transcriber = TranscriptionManager()
     @State private var windowState = WindowState()
     enum PanelState { case collapsed, list, settings }
     @State private var panelState: PanelState = .collapsed
@@ -81,8 +82,12 @@ struct ContentView: View {
                                     recording: recording,
                                     isPlaying: playingRecording == recording,
                                     isEditing: editingRecording == recording,
+                                    isTranscribing: transcriber.state(for: recording) == .running,
+                                    daw: transcriber.daw,
                                     editingName: $editingName,
                                     onPlay: { togglePlayback(recording) },
+                                    onTranscribe: { transcribe(recording) },
+                                    onOpenInDAW: { openInDAW(recording) },
                                     onReveal: { manager.revealRecording(recording) },
                                     onDelete: {
                                         if playingRecording == recording { stopPlayback() }
@@ -103,7 +108,7 @@ struct ContentView: View {
                 }
                 .opacity(lastPanel == .list ? 1 : 0)
 
-                SettingsView(manager: manager, onClose: { togglePanel(.settings) })
+                SettingsView(manager: manager, transcriber: transcriber, onClose: { togglePanel(.settings) })
                     .opacity(lastPanel == .settings ? 1 : 0)
             }
             .overlay(alignment: .top) {
@@ -145,6 +150,37 @@ struct ContentView: View {
                     errorMessage = error.localizedDescription
                 }
             }
+        }
+    }
+
+    /// Uploads the recording, drops the resulting `.mid` beside it, and — when
+    /// the setting is on — hands it straight to the DAW.
+    private func transcribe(_ recording: AudioCaptureManager.Recording) {
+        Task {
+            errorMessage = nil
+            let midiURL = await transcriber.transcribe(recording)
+            manager.loadRecordings()
+
+            if case .failed(let message) = transcriber.state(for: recording) {
+                transcriber.clearError(for: recording)
+                show(error: message)
+            } else if let midiURL, transcriber.openAfterTranscribe {
+                if let message = transcriber.open(midiAt: midiURL) { show(error: message) }
+            }
+        }
+    }
+
+    private func openInDAW(_ recording: AudioCaptureManager.Recording) {
+        if let message = transcriber.open(midiAt: recording.midiURL) {
+            show(error: message)
+            manager.loadRecordings()
+        }
+    }
+
+    private func show(error message: String) {
+        errorMessage = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            if errorMessage == message { errorMessage = nil }
         }
     }
 
@@ -237,8 +273,12 @@ struct RecordingRow: View {
     let recording: AudioCaptureManager.Recording
     let isPlaying: Bool
     let isEditing: Bool
+    let isTranscribing: Bool
+    let daw: DAW
     @Binding var editingName: String
     let onPlay: () -> Void
+    let onTranscribe: () -> Void
+    let onOpenInDAW: () -> Void
     let onReveal: () -> Void
     let onDelete: () -> Void
     let onStartEditing: () -> Void
@@ -272,6 +312,20 @@ struct RecordingRow: View {
                 .font(.system(.body))
                 .foregroundColor(.secondary.opacity(0.5))
                 .padding(.trailing, 4)
+
+            TranscribeButton(
+                isTranscribing: isTranscribing,
+                hasMIDI: recording.hasMIDI,
+                action: onTranscribe
+            )
+            .help(recording.hasMIDI ? "Transcribe to MIDI again" : "Transcribe to MIDI")
+            .padding(.trailing, -2)
+
+            if recording.hasMIDI {
+                IconButton(icon: daw.icon, action: onOpenInDAW)
+                    .help("Open MIDI in \(daw.rawValue)")
+                    .padding(.trailing, -2)
+            }
 
             IconButton(icon: "folder", action: onReveal)
                 .help("Show in Finder")
@@ -369,6 +423,47 @@ struct IconButton: View {
                 .cornerRadius(9)
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
+
+// MARK: - Transcribe Button
+
+/// Same footprint as `IconButton` so the row doesn't reflow when it swaps to
+/// the in-progress spinner.
+struct TranscribeButton: View {
+    let isTranscribing: Bool
+    let hasMIDI: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if isTranscribing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "music.quarternote.3")
+                        .font(.system(size: 13))
+                        .foregroundColor(
+                            hasMIDI
+                                ? accentPurple.opacity(isHovered ? 1.0 : 0.75)
+                                : .secondary.opacity(isHovered ? 0.8 : 0.5)
+                        )
+                }
+            }
+            .frame(width: 34, height: 34)
+            .background(
+                hasMIDI
+                    ? accentPurple.opacity(isHovered ? 0.2 : 0.12)
+                    : Color.primary.opacity(isHovered ? 0.1 : 0.05)
+            )
+            .cornerRadius(9)
+        }
+        .buttonStyle(.plain)
+        .disabled(isTranscribing)
         .onHover { isHovered = $0 }
     }
 }
@@ -783,6 +878,7 @@ struct TabBar<T: Hashable>: View {
 
 struct SettingsView: View {
     @ObservedObject var manager: AudioCaptureManager
+    @ObservedObject var transcriber: TranscriptionManager
     var onClose: () -> Void
 
     var body: some View {
@@ -842,6 +938,76 @@ struct SettingsView: View {
                                 src == .system ? "desktopcomputer" : "mic"
                             }
                         }
+
+                        Divider()
+                            .padding(.vertical, 2)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Transcription server")
+                                .font(.system(.body))
+                                .foregroundColor(.secondary)
+
+                            TextField("", text: $transcriber.serverURL, prompt: Text(TranscriptionManager.defaultServerURL))
+                                .textFieldStyle(.plain)
+                                .font(.system(.body))
+                                .lineLimit(1)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(Color.primary.opacity(0.05))
+                                .cornerRadius(8)
+                                .onSubmit { Task { await transcriber.refreshInstruments() } }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Instruments")
+                                .font(.system(.body))
+                                .foregroundColor(.secondary)
+
+                            Menu {
+                                Button("Auto-detect") { transcriber.instruments = [] }
+                                Divider()
+                                ForEach(transcriber.availableInstruments, id: \.self) { instrument in
+                                    Toggle(Self.instrumentLabel(instrument), isOn: Binding(
+                                        get: { transcriber.instruments.contains(instrument) },
+                                        set: { isOn in
+                                            if isOn {
+                                                transcriber.instruments.append(instrument)
+                                            } else {
+                                                transcriber.instruments.removeAll { $0 == instrument }
+                                            }
+                                        }
+                                    ))
+                                }
+                            } label: {
+                                Text(instrumentSummary)
+                                    .font(.system(.body))
+                                    .lineLimit(1)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.primary.opacity(0.05))
+                            .cornerRadius(8)
+                            .help("Restrict the model to these instruments, or let it decide")
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Open MIDI in")
+                                .font(.system(.body))
+                                .foregroundColor(.secondary)
+
+                            TabBar(options: DAW.allCases, selection: $transcriber.daw, label: \.rawValue) { $0.icon }
+
+                            Toggle("Open automatically after transcribing", isOn: $transcriber.openAfterTranscribe)
+                                .toggleStyle(.checkbox)
+                                .font(.system(.body))
+
+                            if !transcriber.daw.isInstalled {
+                                Text("\(transcriber.daw.rawValue) isn't installed — MIDI will open in the default app.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -851,6 +1017,19 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
+    }
+
+    private var instrumentSummary: String {
+        switch transcriber.instruments.count {
+        case 0: return "Auto-detect"
+        case 1: return Self.instrumentLabel(transcriber.instruments[0])
+        case let n: return "\(n) instruments"
+        }
+    }
+
+    /// `clean_electric_guitar` → `Clean electric guitar`.
+    private static func instrumentLabel(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "_", with: " ").capitalizedFirst
     }
 
     private func shortenedPath(_ url: URL) -> String {
@@ -873,5 +1052,12 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             manager.recordingsDirectory = url
         }
+    }
+}
+
+private extension String {
+    var capitalizedFirst: String {
+        guard let first else { return self }
+        return first.uppercased() + dropFirst()
     }
 }

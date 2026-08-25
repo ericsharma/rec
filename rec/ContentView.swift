@@ -992,6 +992,30 @@ struct SettingsView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
+                            Text("Track sound")
+                                .font(.system(.body))
+                                .foregroundColor(.secondary)
+
+                            Menu {
+                                Button("Match instruments") { transcriber.trackSound = .automatic }
+                                Divider()
+                                ForEach(GMPatch.selectable) { patch in
+                                    Button(patch.name) { transcriber.trackSound = .fixed(patch) }
+                                }
+                            } label: {
+                                Text(trackSoundSummary)
+                                    .font(.system(.body))
+                                    .lineLimit(1)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.primary.opacity(0.05))
+                            .cornerRadius(8)
+                            .help("The General MIDI sound written into the file, so tracks play without routing")
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Open MIDI in")
                                 .font(.system(.body))
                                 .foregroundColor(.secondary)
@@ -1024,6 +1048,13 @@ struct SettingsView: View {
         case 0: return "Auto-detect"
         case 1: return Self.instrumentLabel(transcriber.instruments[0])
         case let n: return "\(n) instruments"
+        }
+    }
+
+    private var trackSoundSummary: String {
+        switch transcriber.trackSound {
+        case .automatic: return "Match instruments"
+        case .fixed(let patch): return patch.name
         }
     }
 

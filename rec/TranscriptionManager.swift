@@ -81,6 +81,12 @@ final class TranscriptionManager: ObservableObject {
         didSet { UserDefaults.standard.set(openAfterTranscribe, forKey: "transcriptionOpenAfter") }
     }
 
+    /// The General MIDI sound stamped into the transcription, so the DAW opens
+    /// it on tracks that make noise without being routed by hand first.
+    @Published var trackSound: TrackSound {
+        didSet { UserDefaults.standard.set(trackSound.storageValue, forKey: "transcriptionTrackSound") }
+    }
+
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
         // Transcription is synchronous on the server and model-bound: a few
@@ -98,6 +104,9 @@ final class TranscriptionManager: ObservableObject {
             .flatMap(DAW.init(rawValue:))
             ?? (DAW.logicPro.isInstalled ? .logicPro : .garageBand)
         openAfterTranscribe = UserDefaults.standard.bool(forKey: "transcriptionOpenAfter")
+        trackSound = TrackSound(
+            storageValue: UserDefaults.standard.string(forKey: "transcriptionTrackSound")
+        )
 
         Task { await refreshInstruments() }
     }
@@ -170,12 +179,33 @@ final class TranscriptionManager: ObservableObject {
             }
 
             let midiURL = recording.midiURL
-            try data.write(to: midiURL, options: .atomic)
+            let plan = patchPlan
+            // Falls back to the server's bytes untouched if they don't parse —
+            // a silent MIDI file beats one this mangled into not opening.
+            let prepared = StandardMIDIFile.addingGeneralMIDI(
+                to: data, patches: plan.patches, fallback: plan.fallback
+            ) ?? data
+            try prepared.write(to: midiURL, options: .atomic)
             states[recording.url] = .idle
             return midiURL
         } catch {
             states[recording.url] = .failed(Self.connectionError(error, host: serverURL))
             return nil
+        }
+    }
+
+    /// The patches to stamp onto the transcribed tracks, in track order.
+    ///
+    /// The server returns one track per instrument in the order they were
+    /// requested, so an explicit instrument list maps straight onto the tracks.
+    /// Auto-detect tells us nothing, so everything gets the fallback.
+    private var patchPlan: (patches: [GMPatch], fallback: GMPatch) {
+        switch trackSound {
+        case .fixed(let patch):
+            return ([], patch)
+        case .automatic:
+            let mapped = instruments.compactMap(GMPatch.matching)
+            return (mapped, mapped.first ?? .grandPiano)
         }
     }
 

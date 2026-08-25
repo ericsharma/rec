@@ -87,6 +87,20 @@ final class TranscriptionManager: ObservableObject {
         didSet { UserDefaults.standard.set(trackSound.storageValue, forKey: "transcriptionTrackSound") }
     }
 
+    /// Overrides the tempo muscriptor detected. Empty means "trust the server",
+    /// which is right whenever detection worked — Logic honours the file's tempo
+    /// map, so a correct detection already opens the project at the right BPM.
+    @Published var tempoOverride: String {
+        didSet { UserDefaults.standard.set(tempoOverride, forKey: "transcriptionTempo") }
+    }
+
+    /// nil when the server's own tempo map should stand.
+    private var tempoBPM: Double? {
+        let trimmed = tempoOverride.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, let bpm = Double(trimmed), bpm > 0 else { return nil }
+        return bpm
+    }
+
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
         // Transcription is synchronous on the server and model-bound: a few
@@ -107,6 +121,7 @@ final class TranscriptionManager: ObservableObject {
         trackSound = TrackSound(
             storageValue: UserDefaults.standard.string(forKey: "transcriptionTrackSound")
         )
+        tempoOverride = UserDefaults.standard.string(forKey: "transcriptionTempo") ?? ""
 
         Task { await refreshInstruments() }
     }
@@ -182,8 +197,8 @@ final class TranscriptionManager: ObservableObject {
             let plan = patchPlan
             // Falls back to the server's bytes untouched if they don't parse —
             // a silent MIDI file beats one this mangled into not opening.
-            let prepared = StandardMIDIFile.addingGeneralMIDI(
-                to: data, patches: plan.patches, fallback: plan.fallback
+            let prepared = StandardMIDIFile.prepare(
+                data, patches: plan.patches, fallback: plan.fallback, tempoBPM: tempoBPM
             ) ?? data
             try prepared.write(to: midiURL, options: .atomic)
             states[recording.url] = .idle

@@ -1016,6 +1016,22 @@ struct SettingsView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
+                            Text("Project tempo")
+                                .font(.system(.body))
+                                .foregroundColor(.secondary)
+
+                            TextField("", text: $transcriber.tempoOverride, prompt: Text("Detected"))
+                                .textFieldStyle(.plain)
+                                .font(.system(.body))
+                                .lineLimit(1)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(Color.primary.opacity(0.05))
+                                .cornerRadius(8)
+                                .help("BPM to open the project at. Leave empty to use the tempo muscriptor detected.")
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Open MIDI in")
                                 .font(.system(.body))
                                 .foregroundColor(.secondary)

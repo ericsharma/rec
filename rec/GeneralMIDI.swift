@@ -121,36 +121,75 @@ enum TrackSound: Hashable {
 // MARK: - Standard MIDI File
 
 /// Just enough SMF reading and writing to retag what the transcription server
-/// produced. muscriptor returns format 1 at 480 ppqn carrying a tempo map and
-/// nothing else — no track names, no program changes, no GM declaration.
+/// produced. muscriptor returns a format 1 file at 480 ppqn carrying a tempo
+/// map and little else — no track names, no program changes, no GM declaration.
 enum StandardMIDIFile {
 
-    /// Rewrites `data` so a DAW opening it instantiates sounds rather than empty
-    /// tracks. `patches` are consumed in track order for note-bearing tracks;
-    /// `fallback` covers every track past the end of that list, which is also how
-    /// a single fixed choice gets applied to all of them.
+    /// The tempo a DAW will open the file at, or nil when it carries none and
+    /// the DAW will fall back to its own default (120 BPM in Logic).
+    static func detectedTempo(in data: Data) -> Double? {
+        let bytes = [UInt8](data)
+        guard let chunks = split(bytes) else { return nil }
+        for chunk in chunks where chunk.type == "MTrk" {
+            guard let scan = scan(chunk.body), let offset = scan.tempoOffsets.first else { continue }
+            let us = Int(chunk.body[offset]) << 16
+                   | Int(chunk.body[offset + 1]) << 8
+                   | Int(chunk.body[offset + 2])
+            return us > 0 ? 60_000_000 / Double(us) : nil
+        }
+        return nil
+    }
+
+    /// Rewrites `data` so a DAW opening it starts at the right tempo and asks
+    /// for sounds instead of empty tracks.
+    ///
+    /// `patches` are consumed in track order for note-bearing tracks; `fallback`
+    /// covers every track past the end of that list, which is also how a single
+    /// pinned patch reaches all of them. `tempoBPM` overrides the server's tempo
+    /// map when set, and guarantees a tempo event exists even when the file
+    /// arrived without one.
     ///
     /// Returns nil when the bytes aren't an SMF this understands. Callers keep
-    /// the server's file in that case: a MIDI file that opens silently still
-    /// beats one that has been corrupted into not opening at all.
-    static func addingGeneralMIDI(to data: Data, patches: [GMPatch], fallback: GMPatch) -> Data? {
+    /// the server's file in that case: a MIDI file that opens at the wrong tempo
+    /// still beats one mangled into not opening at all.
+    static func prepare(_ data: Data,
+                        patches: [GMPatch],
+                        fallback: GMPatch,
+                        tempoBPM: Double?) -> Data? {
         let bytes = [UInt8](data)
         guard bytes.count >= 14, Array(bytes[0..<4]) == Array("MThd".utf8) else { return nil }
         guard var chunks = split(bytes), chunks.first?.type == "MThd" else { return nil }
 
         var queue = patches
-        var declaredGM = false
+        var isFirstTrack = true
+        var wroteTempo = false
 
         for index in chunks.indices where chunks[index].type == "MTrk" {
             guard let scan = scan(chunks[index].body) else { return nil }
-            var prefix: [UInt8] = []
 
-            // GM System On, once, at the head of the first track. This is what
-            // tells a host to treat the file as General MIDI at all; without it
-            // the program changes below are just channel data it may ignore.
-            if !declaredGM {
-                prefix += varLen(0) + [0xF0, 0x05, 0x7E, 0x7F, 0x09, 0x01, 0xF7]
-                declaredGM = true
+            // Tempo first, and in place: the three bytes of a tempo event are a
+            // fixed width, so rewriting them can't move anything else.
+            if let bpm = tempoBPM {
+                let us = microsecondsPerQuarter(bpm)
+                for offset in scan.tempoOffsets {
+                    chunks[index].body[offset]     = UInt8((us >> 16) & 0xFF)
+                    chunks[index].body[offset + 1] = UInt8((us >> 8) & 0xFF)
+                    chunks[index].body[offset + 2] = UInt8(us & 0xFF)
+                    wroteTempo = true
+                }
+            } else if !scan.tempoOffsets.isEmpty {
+                wroteTempo = true
+            }
+
+            var head: [UInt8] = []
+
+            // A GM declaration goes *after* the tempo map, not before it. Both
+            // sit at delta 0 so the ordering is semantically free, but a host
+            // reading the header expects the tempo where the server put it.
+            var declaration: [UInt8] = []
+            if isFirstTrack {
+                declaration = varLen(0) + [0xF0, 0x05, 0x7E, 0x7F, 0x09, 0x01, 0xF7]
+                isFirstTrack = false
             }
 
             if scan.hasNotes {
@@ -158,8 +197,8 @@ enum StandardMIDIFile {
                 let channel = patch.isPercussion ? GMPatch.percussionChannel : (scan.firstChannel ?? 0)
 
                 if patch.isPercussion {
-                    // Percussion is the one sound a program change can't select,
-                    // so move the notes to channel 10 instead of trusting
+                    // Percussion is the one voice a program change can't select,
+                    // so move the notes to channel 10 rather than trusting
                     // whichever channel the server happened to write.
                     for offset in scan.statusOffsets {
                         chunks[index].body[offset] =
@@ -169,15 +208,40 @@ enum StandardMIDIFile {
 
                 if !scan.hasName {
                     let name = Array(patch.name.utf8.prefix(127))
-                    prefix += varLen(0) + [0xFF, 0x03] + varLen(name.count) + name
+                    head += varLen(0) + [0xFF, 0x03] + varLen(name.count) + name
                 }
-                prefix += varLen(0) + [0xC0 | channel, patch.program]
+                head += varLen(0) + [0xC0 | channel, patch.program]
             }
 
-            chunks[index].body = prefix + chunks[index].body
+            // Descending order so the earlier offset stays valid.
+            if !declaration.isEmpty {
+                chunks[index].body.insert(contentsOf: declaration, at: scan.headerEnd)
+            }
+            if !head.isEmpty {
+                chunks[index].body.insert(contentsOf: head, at: 0)
+            }
+        }
+
+        // A file with no tempo event at all opens at the DAW's default. If we
+        // know better, say so explicitly at the head of the first track.
+        if !wroteTempo, let bpm = tempoBPM,
+           let first = chunks.firstIndex(where: { $0.type == "MTrk" }) {
+            let us = microsecondsPerQuarter(bpm)
+            let event = varLen(0) + [0xFF, 0x51, 0x03,
+                                     UInt8((us >> 16) & 0xFF),
+                                     UInt8((us >> 8) & 0xFF),
+                                     UInt8(us & 0xFF)]
+            chunks[first].body.insert(contentsOf: event, at: 0)
         }
 
         return Data(join(chunks))
+    }
+
+    /// Clamped to what a tempo event can express and to tempos a transcription
+    /// could plausibly mean, so a stray keystroke can't produce an unopenable file.
+    private static func microsecondsPerQuarter(_ bpm: Double) -> Int {
+        let safe = min(max(bpm, 20), 300)
+        return min(max(Int((60_000_000 / safe).rounded()), 1), 0xFF_FFFF)
     }
 
     // MARK: - Chunks
@@ -221,18 +285,24 @@ enum StandardMIDIFile {
         var hasName = false
         var firstChannel: UInt8?
         /// Byte offsets of channel-voice status bytes, for retargeting the
-        /// channel. Events running-status into the previous one have no status
+        /// channel. Events running-status into the previous one carry no status
         /// byte of their own and inherit whatever we rewrite here.
         var statusOffsets: [Int] = []
+        /// Offset of the three data bytes of each tempo event.
+        var tempoOffsets: [Int] = []
+        /// Just past the run of zero-delta meta events opening the track — where
+        /// something can be inserted without displacing the tempo map.
+        var headerEnd = 0
     }
 
     private static func scan(_ body: [UInt8]) -> TrackScan? {
         var scan = TrackScan()
         var running: UInt8?
+        var inHeader = true
         var i = 0
 
         while i < body.count {
-            guard let (_, afterDelta) = readVarLen(body, i) else { return nil }
+            guard let (delta, afterDelta) = readVarLen(body, i) else { return nil }
             i = afterDelta
             guard i < body.count else { return nil }
 
@@ -255,18 +325,23 @@ enum StandardMIDIFile {
                 let type = body[i]
                 i += 1
                 guard let (length, afterLength) = readVarLen(body, i) else { return nil }
-                i = afterLength + length
+                if type == 0x51 && length == 3 { scan.tempoOffsets.append(afterLength) }
                 if type == 0x03 { scan.hasName = true }
-                if type == 0x2F { return i <= body.count ? scan : nil }
+                i = afterLength + length
+                guard i <= body.count else { return nil }
+                if type == 0x2F { return scan }
+                if inHeader && delta == 0 { scan.headerEnd = i } else { inHeader = false }
             case 0xF0, 0xF7:
                 guard let (length, afterLength) = readVarLen(body, i) else { return nil }
                 i = afterLength + length
+                inHeader = false
             default:
                 let kind = status & 0xF0
                 if scan.firstChannel == nil { scan.firstChannel = status & 0x0F }
                 if statusOffset >= 0 { scan.statusOffsets.append(statusOffset) }
                 if kind == 0x90 { scan.hasNotes = true }
                 i += (kind == 0xC0 || kind == 0xD0) ? 1 : 2
+                inHeader = false
             }
             guard i <= body.count else { return nil }
         }
